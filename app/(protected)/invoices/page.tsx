@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useLiveQuery } from "dexie-react-hooks";
 import { Header } from "@/components/layout/Header";
@@ -17,6 +17,7 @@ import {
   generateAllInvoicesForEvent,
   getSalesForInvoice,
   loadInvoicePdfInput,
+  resolveInvoiceForOpenDetail,
   upsertInvoiceForBidder,
 } from "@/lib/services/invoiceLogic";
 import {
@@ -88,27 +89,59 @@ export default function InvoicesPage() {
     [currentEventId, dbReady, db]
   );
 
+  const detailInvoiceResolved = useLiveQuery(
+    async () =>
+      liveQueryGuard("invoices.detailResolved", async () => {
+        if (
+          detailInv?.id == null ||
+          currentEventId == null ||
+          !dbReady ||
+          !db
+        ) {
+          return null;
+        }
+        return resolveInvoiceForOpenDetail(db, currentEventId, detailInv);
+      }, null),
+    [
+      detailInv?.id,
+      detailInv?.syncKey,
+      detailInv?.invoiceNumber,
+      detailInv?.bidderId,
+      currentEventId,
+      dbReady,
+      db,
+    ]
+  );
+
+  const effectiveInvoiceIdForSales = useMemo(() => {
+    if (detailInv?.id == null) return undefined;
+    if (detailInvoiceResolved === undefined) return detailInv.id;
+    if (detailInvoiceResolved === null) return undefined;
+    return detailInvoiceResolved.id;
+  }, [detailInv?.id, detailInvoiceResolved]);
+
   const detailSales = useLiveQuery(
     async () =>
       liveQueryGuard("invoices.detailSales", async () => {
-        if (!detailInv?.id || !db) return [];
-        return getSalesForInvoice(db, detailInv.id);
+        if (effectiveInvoiceIdForSales == null || !db) return [];
+        return getSalesForInvoice(db, effectiveInvoiceIdForSales);
       }, []),
-    [detailInv?.id, db]
+    [effectiveInvoiceIdForSales, db]
   );
 
-  const detailInvoiceLive = useLiveQuery(
-    async () =>
-      liveQueryGuard("invoices.detailInvoice", async () => {
-        if (detailInv?.id == null || !dbReady || !db) return null;
-        return db.invoices.get(detailInv.id);
-      }, null),
-    [detailInv?.id, dbReady, db]
-  );
+  useEffect(() => {
+    if (detailInvoiceResolved === undefined || detailInvoiceResolved === null) {
+      return;
+    }
+    setDetailInv((prev) => {
+      if (!prev || prev.id === detailInvoiceResolved.id) return prev;
+      return { ...prev, ...detailInvoiceResolved, bidder: prev.bidder };
+    });
+  }, [detailInvoiceResolved]);
 
   const displayDetailInvoice =
-    detailInv && detailInvoiceLive
-      ? { ...detailInvoiceLive, bidder: detailInv.bidder }
+    detailInv && detailInvoiceResolved != null
+      ? { ...detailInvoiceResolved, bidder: detailInv.bidder }
       : detailInv;
 
   async function handleGenerateAll() {

@@ -318,6 +318,34 @@ export async function getSalesForInvoice(
   return rows;
 }
 
+/**
+ * Resolves the current invoice row after cloud snapshot replace (which deletes
+ * child tables and re-inserts with new auto-increment ids). The modal may still
+ * hold a stale numeric `id` while `syncKey` / display keys still match one row.
+ */
+export async function resolveInvoiceForOpenDetail(
+  db: AuctionDB,
+  eventId: number,
+  hint: Pick<Invoice, "id" | "syncKey" | "invoiceNumber" | "bidderId">
+): Promise<Invoice | null> {
+  if (hint.id == null) return null;
+  const byId = await db.invoices.get(hint.id);
+  if (byId) return byId;
+  const rows = await db.invoices.where("eventId").equals(eventId).toArray();
+  if (hint.syncKey) {
+    const m = rows.find((i) => i.syncKey === hint.syncKey);
+    if (m) return m;
+  }
+  if (hint.invoiceNumber != null && hint.bidderId != null) {
+    const m = rows.find(
+      (i) =>
+        i.invoiceNumber === hint.invoiceNumber && i.bidderId === hint.bidderId
+    );
+    if (m) return m;
+  }
+  return null;
+}
+
 export function toInvoicePdfInput(
   invoice: Invoice,
   event: AuctionEvent,
