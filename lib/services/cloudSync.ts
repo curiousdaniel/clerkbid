@@ -1,4 +1,5 @@
 import type { AuctionDB } from "@/lib/db";
+import { isCloudEventSyncIdTombstoned } from "@/lib/services/cloudDeleteTombstone";
 import { ensureSettingsRow } from "@/lib/settings";
 import {
   buildEventExport,
@@ -253,6 +254,20 @@ export async function pushEventSnapshot(
   return { ok: true, updatedAt: data.updatedAt };
 }
 
+/** Removes the server snapshot and op log for this event (org-scoped). */
+export async function deleteCloudEventBackup(
+  syncId: string
+): Promise<{ ok: true } | { ok: false; status: number }> {
+  const id = syncId.trim();
+  if (!id) return { ok: false, status: 400 };
+  const res = await fetch(
+    `/api/sync/event/?syncId=${encodeURIComponent(id)}`,
+    { method: "DELETE", credentials: "include", cache: "no-store" }
+  );
+  if (!res.ok) return { ok: false, status: res.status };
+  return { ok: true };
+}
+
 export async function fetchEventSnapshot(syncId: string): Promise<
   | { ok: true; payload: EventExportPayload; updatedAt: string }
   | { ok: false; status: number }
@@ -357,6 +372,21 @@ export async function recordSuccessfulPush(
 }
 
 /**
+ * Pushes one event's snapshot immediately and updates local push baselines.
+ * Use after deletes that are not represented in the op log (e.g. bidders,
+ * consignors) so the next pull/merge cannot resurrect rows from a stale snapshot.
+ */
+export async function flushSingleEventToCloudSnapshot(
+  db: AuctionDB,
+  eventId: number
+): Promise<boolean> {
+  const result = await pushEventWithAutoMerge(db, eventId);
+  if (!result.ok) return false;
+  await recordSuccessfulPush(db, eventId, result.updatedAt);
+  return true;
+}
+
+/**
  * Import every cloud snapshot whose syncId is not already present locally.
  * Used so a second device/browser can hydrate from the server after login.
  * Pass the result of `fetchSyncList()` (when `ok`) so the list is not fetched twice.
@@ -381,6 +411,9 @@ export async function pullCloudEventsMissingLocally(
       .first();
     if (existing) {
       alreadyLocal += 1;
+      continue;
+    }
+    if (await isCloudEventSyncIdTombstoned(db, entry.eventSyncId)) {
       continue;
     }
 

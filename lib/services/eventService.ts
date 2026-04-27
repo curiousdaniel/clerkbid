@@ -27,10 +27,16 @@ export async function clearEventDataKeepShell(
   );
 }
 
+/**
+ * Permanently removes the event and all related rows. If the event had a cloud
+ * `syncId`, records a tombstone and clears op-sync rows so the next pull cannot
+ * resurrect it from the server while the local row is gone.
+ */
 export async function deleteEventCascade(
   db: AuctionDB,
   eventId: number
-): Promise<void> {
+): Promise<{ cloudSyncId: string | null }> {
+  let cloudSyncId: string | null = null;
   await db.transaction(
     "rw",
     [
@@ -40,9 +46,25 @@ export async function deleteEventCascade(
       db.sales,
       db.invoices,
       db.eventLocalBranding,
+      db.syncOutbox,
+      db.syncState,
+      db.syncConflicts,
+      db.deletedCloudSyncTombstones,
       db.events,
     ],
     async () => {
+      const ev = await db.events.get(eventId);
+      const sid = ev?.syncId?.trim();
+      if (sid) {
+        cloudSyncId = sid;
+        await db.deletedCloudSyncTombstones.put({
+          eventSyncId: sid,
+          deletedAt: new Date(),
+        });
+        await db.syncOutbox.where("eventSyncId").equals(sid).delete();
+        await db.syncState.delete(sid);
+        await db.syncConflicts.where("eventSyncId").equals(sid).delete();
+      }
       await db.bidders.where("eventId").equals(eventId).delete();
       await db.consignors.where("eventId").equals(eventId).delete();
       await db.lots.where("eventId").equals(eventId).delete();
@@ -56,4 +78,5 @@ export async function deleteEventCascade(
   if (current === eventId) {
     await setCurrentEventId(db, null);
   }
+  return { cloudSyncId };
 }

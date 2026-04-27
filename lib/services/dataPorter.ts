@@ -12,6 +12,7 @@ import { APP_VERSION } from "@/lib/utils/constants";
 import { newEntitySyncKey } from "@/lib/utils/clientSyncKey";
 import { toDate } from "@/lib/utils/coerceDate";
 import { newEventSyncId } from "@/lib/utils/syncId";
+import { forgetDeletedCloudEventSyncId } from "@/lib/services/cloudDeleteTombstone";
 import { roundMoney } from "@/lib/services/invoiceLogic";
 
 export const EXPORT_VERSION = 6;
@@ -631,7 +632,15 @@ export async function importEventFromPayload(
   return withCloudSyncApply(() =>
     db.transaction(
       "rw",
-      [db.events, db.bidders, db.consignors, db.lots, db.sales, db.invoices],
+      [
+        db.events,
+        db.bidders,
+        db.consignors,
+        db.lots,
+        db.sales,
+        db.invoices,
+        db.deletedCloudSyncTombstones,
+      ],
       async () => {
       const ev = payload.event;
       const now = new Date();
@@ -639,6 +648,7 @@ export async function importEventFromPayload(
         typeof ev.syncId === "string" && ev.syncId.length > 0
           ? ev.syncId
           : newEventSyncId();
+      await forgetDeletedCloudEventSyncId(db, syncId);
       const buyersPremiumRate =
         typeof ev.buyersPremiumRate === "number" &&
         Number.isFinite(ev.buyersPremiumRate)
@@ -691,6 +701,7 @@ export async function replaceEventFromPayload(
         db.syncOutbox,
         db.syncState,
         db.syncConflicts,
+        db.deletedCloudSyncTombstones,
       ],
       async () => {
       const existing = await db.events.get(eventId);
@@ -701,6 +712,7 @@ export async function replaceEventFromPayload(
         payload.event.syncId.length > 0
           ? payload.event.syncId
           : existing.syncId;
+      await forgetDeletedCloudEventSyncId(db, payloadSyncId);
       await db.syncOutbox.where("eventSyncId").equals(payloadSyncId).delete();
       await db.syncState.delete(payloadSyncId);
       await db.syncConflicts.where("eventSyncId").equals(payloadSyncId).delete();

@@ -18,6 +18,7 @@ import {
   importEventFromPayload,
   parseEventExportPayload,
 } from "@/lib/services/dataPorter";
+import { deleteCloudEventBackup } from "@/lib/services/cloudSync";
 import { deleteEventCascade } from "@/lib/services/eventService";
 import { liveQueryGuard } from "@/lib/dexie/liveQueryGuard";
 
@@ -170,8 +171,11 @@ export default function EventsPage() {
           if (deleteTarget?.id == null || !db) return;
           const id = deleteTarget.id;
           setDeleteTarget(null);
-          await deleteEventCascade(db, id);
+          const { cloudSyncId } = await deleteEventCascade(db, id);
           refresh();
+          if (cloudSyncId) {
+            void deleteCloudEventBackup(cloudSyncId);
+          }
           showToast({ kind: "success", message: "Event deleted." });
         }}
       />

@@ -119,6 +119,10 @@ export function CloudSyncProvider({ children }: { children: ReactNode }) {
   );
   const runPushAllSilentRef = useRef<() => Promise<void>>(async () => {});
   const runBackgroundSyncCycleRef = useRef<() => Promise<void>>(async () => {});
+  /** Runs pending debounced snapshot push before any cloud pull/merge (avoids stale server re-adding deleted rows). */
+  const flushDebouncedCloudPushBeforePullRef = useRef<() => Promise<void>>(
+    async () => {}
+  );
   const ablyDebounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
     null
   );
@@ -255,6 +259,16 @@ export function CloudSyncProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     runPushAllSilentRef.current = runPushAllSilent;
   }, [runPushAllSilent]);
+
+  useEffect(() => {
+    flushDebouncedCloudPushBeforePullRef.current = async () => {
+      if (debouncedPushTimerRef.current) {
+        clearTimeout(debouncedPushTimerRef.current);
+        debouncedPushTimerRef.current = null;
+        await runPushAllSilentRef.current();
+      }
+    };
+  }, []);
 
   useEffect(() => {
     return () => {
@@ -396,6 +410,7 @@ export function CloudSyncProvider({ children }: { children: ReactNode }) {
     if (status !== "authenticated" || !dbReady || !db || !online) return;
     syncCycleLockRef.current = true;
     try {
+      await flushDebouncedCloudPushBeforePullRef.current();
       await runPullAndMaybeSwitchEvent();
       if (db && isSyncOpsEnabled()) {
         const opSummary = await runOperationLevelSync(db);
@@ -433,12 +448,13 @@ export function CloudSyncProvider({ children }: { children: ReactNode }) {
       if (ablyDebounceTimerRef.current) {
         clearTimeout(ablyDebounceTimerRef.current);
       }
-      ablyDebounceTimerRef.current = setTimeout(() => {
+        ablyDebounceTimerRef.current = setTimeout(() => {
         ablyDebounceTimerRef.current = null;
         void (async () => {
           const d = dbRef.current;
           const eid = currentEventIdRef.current;
           if (d && eid != null) {
+            await flushDebouncedCloudPushBeforePullRef.current();
             const rr = await refreshEventFromCloudIfServerNewer(d, eid);
             if (rr.refreshed) refreshForSyncRef.current();
           }

@@ -59,6 +59,12 @@ const STORE_DEF_V9 = {
   syncConflicts: "++id, eventSyncId, dismissedAt",
 } as const;
 
+const STORE_DEF_V10 = {
+  ...STORE_DEF_V9,
+  /** User deleted this cloud sync id locally; do not pull it from the server again. */
+  deletedCloudSyncTombstones: "&eventSyncId, deletedAt",
+} as const;
+
 export function sanitizeUserIdForDbName(userId: string): string {
   return userId.replace(/[^a-zA-Z0-9_-]/g, "_");
 }
@@ -198,6 +204,12 @@ export interface SyncConflictRow {
   dismissedAt?: Date;
 }
 
+/** Local marker: this eventSyncId was permanently deleted; ignore server list until re-import. */
+export interface DeletedCloudSyncTombstone {
+  eventSyncId: string;
+  deletedAt: Date;
+}
+
 export interface AppSettings {
   id?: number;
   currentEventId: number | null;
@@ -250,6 +262,7 @@ export class AuctionDB extends Dexie {
   syncOutbox!: Table<SyncOutboxRow>;
   syncState!: Table<SyncStateRow>;
   syncConflicts!: Table<SyncConflictRow>;
+  deletedCloudSyncTombstones!: Table<DeletedCloudSyncTombstone>;
 
   constructor(userId: string | number) {
     super(userDexieDatabaseName(userId));
@@ -366,6 +379,7 @@ export class AuctionDB extends Dexie {
           }
         });
       });
+    this.version(10).stores(STORE_DEF_V10);
     registerParentEventTouchHooks(this);
   }
 }
