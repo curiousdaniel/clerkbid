@@ -8,6 +8,7 @@ import { SaleFormFieldOrderEditor } from "@/components/clerking/SaleFormFieldOrd
 import { RecentSales } from "@/components/clerking/RecentSales";
 import { LotLookup } from "@/components/clerking/LotLookup";
 import { BidderQuickLookup } from "@/components/clerking/BidderQuickLookup";
+import { PaddleTally } from "@/components/clerking/PaddleTally";
 import { useCurrentEvent } from "@/lib/hooks/useCurrentEvent";
 import { useToast } from "@/components/providers/ToastProvider";
 import { useCloudSync } from "@/components/providers/CloudSyncProvider";
@@ -76,10 +77,13 @@ export default function ClerkingPage() {
           </div>
         </div>
         <div className="lg:col-span-2 space-y-6">
-          <Card className="lg:sticky lg:top-6">
+          <Card>
             <BidderQuickLookup eventId={currentEventId} />
           </Card>
-          <div className="lg:sticky lg:top-6">
+          <Card>
+            <PaddleTally event={currentEvent} />
+          </Card>
+          <div>
             <LotLookup eventId={currentEventId} />
           </div>
         </div>

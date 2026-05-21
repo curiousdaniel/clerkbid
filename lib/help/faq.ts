@@ -19,7 +19,7 @@ export const helpFaqs: HelpFaqItem[] = [
   {
     question: "Can I undo a sale?",
     answer:
-      "There is no undo on the clerking screen after you record a sale. If you need to correct or remove a line, open the Lots or Invoices area for that event and edit or delete the sale there.",
+      "Yes. The Lots tab shows every lot for the event with full sale details — search by lot number, paddle, buyer name, or description, then expand the row to edit or void the sale. The Clerking page also offers Edit / Void on the most recent 20 sales for quick corrections. Sales on a paid invoice must be marked unpaid first.",
   },
   {
     question: "Do logos on invoices sync to the cloud?",

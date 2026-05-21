@@ -13,12 +13,7 @@ import { Button } from "@/components/ui/Button";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { SaleCorrectionModal } from "@/components/invoices/SaleCorrectionModal";
 import { liveQueryGuard } from "@/lib/dexie/liveQueryGuard";
-import { recalculateAndPersistInvoice } from "@/lib/services/invoiceLogic";
-import {
-  enqueueInvoicePut,
-  enqueueSaleDelete,
-  ensureSaleSyncKey,
-} from "@/lib/sync/ops/enqueueOps";
+import { voidSale } from "@/lib/services/saleInvoiceEdits";
 
 type Row = Sale & { baseLot: number };
 
@@ -58,7 +53,7 @@ export function RecentSales({
   );
 
   const [openId, setOpenId] = useState<number | null>(null);
-  const [voidSale, setVoidSale] = useState<Sale | null>(null);
+  const [voidTarget, setVoidTarget] = useState<Sale | null>(null);
   const [editingSale, setEditingSale] = useState<Sale | null>(null);
 
   const groups = useMemo(() => {
@@ -76,30 +71,17 @@ export function RecentSales({
   }, [sales]);
 
   async function confirmVoid() {
-    if (voidSale?.id == null || voidSale.lotId == null || !db) return;
-    const saleRow = voidSale;
-    const saleId = saleRow.id!;
-    const lotId = saleRow.lotId;
-    const invoiceId = saleRow.invoiceId;
-    setVoidSale(null);
-    const saleSyncKey = await ensureSaleSyncKey(db, saleId);
-    await db.transaction("rw", [db.lots, db.sales], async () => {
-      await db.sales.delete(saleId);
-      await db.lots.update(lotId, {
-        status: "unsold",
-        updatedAt: new Date(),
-      });
-    });
-    if (invoiceId != null) {
-      await recalculateAndPersistInvoice(db, invoiceId, event);
-      if (event.syncId) {
-        await enqueueInvoicePut(db, event.syncId, invoiceId);
-      }
+    if (voidTarget?.id == null || !db) return;
+    const saleId = voidTarget.id;
+    setVoidTarget(null);
+    try {
+      await voidSale(db, event, saleId);
+      onVoided?.();
+    } catch (e) {
+      onError?.(
+        e instanceof Error ? e.message : "Could not void sale."
+      );
     }
-    if (event.syncId && saleSyncKey) {
-      await enqueueSaleDelete(db, event.syncId, saleSyncKey);
-    }
-    onVoided?.();
   }
 
   if (!sales) {
@@ -181,7 +163,7 @@ export function RecentSales({
                           variant="danger"
                           type="button"
                           className="inline-flex items-center gap-1 text-sm"
-                          onClick={() => setVoidSale(s)}
+                          onClick={() => setVoidTarget(s)}
                         >
                           <Ban className="h-4 w-4" />
                           Void sale
@@ -197,16 +179,16 @@ export function RecentSales({
       </ul>
 
       <ConfirmDialog
-        open={voidSale != null}
+        open={voidTarget != null}
         title="Void sale"
         message={
-          voidSale
-            ? `Remove this sale for lot ${voidSale.displayLotNumber} and mark the lot unsold?`
+          voidTarget
+            ? `Remove this sale for lot ${voidTarget.displayLotNumber} and mark the lot unsold?`
             : ""
         }
         confirmLabel="Void sale"
         danger
-        onClose={() => setVoidSale(null)}
+        onClose={() => setVoidTarget(null)}
         onConfirm={() => void confirmVoid()}
       />
 

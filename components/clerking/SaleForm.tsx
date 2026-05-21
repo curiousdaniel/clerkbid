@@ -736,16 +736,30 @@ export function SaleForm({
     // a new supplemental invoice if all prior invoices are paid). This
     // eliminates the "items not on the invoice" gap where sales stayed
     // unallocated until someone manually clicked "Generate".
+    let supplementalAfterPaid = false;
     try {
       const evForInvoice = await db.events.get(eventId);
       if (evForInvoice) {
-        await upsertInvoiceForBidder(db, evForInvoice, bidderId);
+        const result = await upsertInvoiceForBidder(
+          db,
+          evForInvoice,
+          bidderId
+        );
+        if (result.kind === "created" && result.supplementalAfterPaid) {
+          supplementalAfterPaid = true;
+        }
       }
     } catch {
       // Sale write succeeded; allocation can be retried via Generate.
     }
 
     showToast({ kind: "success", message: `Sale recorded — ${displayStr}` });
+    if (supplementalAfterPaid) {
+      showToast({
+        kind: "info",
+        message: `New invoice opened for paddle #${paddle} — earlier invoice was already paid.`,
+      });
+    }
     scheduleCloudPush();
 
     if (passOutActive) {

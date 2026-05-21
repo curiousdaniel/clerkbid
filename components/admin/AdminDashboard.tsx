@@ -11,6 +11,31 @@ import { Input } from "@/components/ui/Input";
 import type { AdminUserRow } from "@/lib/admin/userStats";
 import { formatDateTime } from "@/lib/utils/formatDate";
 import { isSuperAdminUserIdAndEmail } from "@/lib/auth/superAdmin";
+import { Badge } from "@/components/ui/Badge";
+
+function formatRelative(date: Date | null): string {
+  if (!date) return "never";
+  const ms = Date.now() - new Date(date).getTime();
+  if (ms < 60_000) return "just now";
+  if (ms < 60 * 60_000) {
+    const m = Math.round(ms / 60_000);
+    return `${m} min ago`;
+  }
+  if (ms < 24 * 60 * 60_000) {
+    const h = Math.round(ms / (60 * 60_000));
+    return `${h} hr ago`;
+  }
+  return formatDateTime(date);
+}
+
+function formatMoney(raw: string): string {
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return raw;
+  return n.toLocaleString(undefined, {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+}
 
 export function AdminDashboard({
   initialUsers,
@@ -328,16 +353,22 @@ export function AdminDashboard({
         </form>
       </Card>
 
+      <ActivitySummary users={initialUsers} />
+
       <Card className="mt-6 overflow-x-auto p-0">
-        <table className="w-full min-w-[880px] text-left text-sm">
+        <table className="w-full min-w-[1180px] text-left text-sm">
           <thead className="border-b border-navy/10 bg-surface-muted/50 text-xs font-semibold uppercase tracking-wide text-muted dark:border-slate-700 dark:bg-slate-800/40">
             <tr>
+              <th className="px-4 py-3">Status</th>
               <th className="px-4 py-3">User</th>
               <th className="px-4 py-3">Organization</th>
               <th className="px-4 py-3 text-right">Events</th>
               <th className="px-4 py-3 text-right">Lots</th>
               <th className="px-4 py-3 text-right">Bidders</th>
+              <th className="px-4 py-3 text-right">Consignors</th>
               <th className="px-4 py-3 text-right">Sales</th>
+              <th className="px-4 py-3 text-right">Invoices</th>
+              <th className="px-4 py-3 text-right">Invoice total</th>
               <th className="px-4 py-3">Last sync</th>
               <th className="px-4 py-3">Actions</th>
             </tr>
@@ -349,6 +380,28 @@ export function AdminDashboard({
                 session.user.email?.toLowerCase() === u.email.toLowerCase();
               return (
                 <tr key={u.id} className="bg-white/40 dark:bg-slate-900/20">
+                  <td className="px-4 py-3 align-top">
+                    <div className="flex items-center gap-2">
+                      <span
+                        aria-hidden
+                        className={`inline-block h-2.5 w-2.5 rounded-full ${
+                          u.online_now
+                            ? "bg-emerald-500 ring-2 ring-emerald-200 dark:ring-emerald-900/50"
+                            : u.last_seen_at
+                              ? "bg-slate-300 dark:bg-slate-600"
+                              : "bg-slate-200 dark:bg-slate-700"
+                        }`}
+                      />
+                      <span className="text-xs text-muted">
+                        {u.online_now ? "Online" : formatRelative(u.last_seen_at)}
+                      </span>
+                    </div>
+                    {u.pings_24h > 0 ? (
+                      <div className="mt-1 text-[10px] uppercase tracking-wide text-muted">
+                        {u.pings_24h} ping{u.pings_24h === 1 ? "" : "s"} / 24h
+                      </div>
+                    ) : null}
+                  </td>
                   <td className="px-4 py-3 align-top">
                     <div className="font-medium text-ink dark:text-slate-100">
                       {u.first_name} {u.last_name}
@@ -370,7 +423,16 @@ export function AdminDashboard({
                     {u.total_bidders}
                   </td>
                   <td className="px-4 py-3 text-right tabular-nums">
+                    {u.total_consignors}
+                  </td>
+                  <td className="px-4 py-3 text-right tabular-nums">
                     {u.total_sales}
+                  </td>
+                  <td className="px-4 py-3 text-right tabular-nums">
+                    {u.total_invoices}
+                  </td>
+                  <td className="px-4 py-3 text-right tabular-nums">
+                    {formatMoney(u.invoice_total_sum)}
                   </td>
                   <td className="px-4 py-3 align-top text-xs text-muted">
                     {u.last_cloud_sync
@@ -427,5 +489,74 @@ export function AdminDashboard({
         account.
       </p>
     </div>
+  );
+}
+
+function ActivitySummary({ users }: { users: AdminUserRow[] }) {
+  const onlineNow = users.filter((u) => u.online_now);
+  const active24h = users.filter((u) => u.pings_24h > 0);
+  const totalEvents = users.reduce((a, u) => a + u.synced_events, 0);
+  const totalSales = users.reduce((a, u) => a + Number(u.total_sales || 0), 0);
+  const totalInvoiceSum = users.reduce(
+    (a, u) => a + Number(u.invoice_total_sum || 0),
+    0
+  );
+  return (
+    <div className="mt-6 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+      <SummaryCard
+        label="Online now"
+        value={String(onlineNow.length)}
+        sub={
+          onlineNow.length > 0
+            ? onlineNow
+                .slice(0, 3)
+                .map((u) => `${u.first_name} ${u.last_name}`)
+                .join(", ") + (onlineNow.length > 3 ? "…" : "")
+            : "No one is signed in right now."
+        }
+        accent={onlineNow.length > 0 ? "live" : undefined}
+      />
+      <SummaryCard
+        label="Active in last 24h"
+        value={String(active24h.length)}
+        sub={`of ${users.length} accounts`}
+      />
+      <SummaryCard label="Synced events" value={String(totalEvents)} />
+      <SummaryCard label="Sales" value={totalSales.toLocaleString()} />
+      <SummaryCard
+        label="Invoice totals"
+        value={`$${totalInvoiceSum.toLocaleString(undefined, {
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2,
+        })}`}
+      />
+    </div>
+  );
+}
+
+function SummaryCard({
+  label,
+  value,
+  sub,
+  accent,
+}: {
+  label: string;
+  value: string;
+  sub?: string;
+  accent?: "live";
+}) {
+  return (
+    <Card className="p-4">
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-xs uppercase tracking-wide text-muted">{label}</p>
+        {accent === "live" ? <Badge tone="success">Live</Badge> : null}
+      </div>
+      <p className="mt-2 text-2xl font-semibold tabular-nums text-ink dark:text-slate-100">
+        {value}
+      </p>
+      {sub ? (
+        <p className="mt-1 truncate text-xs text-muted">{sub}</p>
+      ) : null}
+    </Card>
   );
 }

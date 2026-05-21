@@ -146,7 +146,12 @@ export async function bidderIdsWithSales(
 }
 
 export type UpsertResult =
-  | { kind: "created"; invoiceId: number }
+  | {
+      kind: "created";
+      invoiceId: number;
+      /** True when this bidder already had at least one prior paid invoice. */
+      supplementalAfterPaid: boolean;
+    }
   | { kind: "updated"; invoiceId: number }
   | { kind: "skipped_paid" }
   | { kind: "no_sales" };
@@ -339,7 +344,8 @@ export async function upsertInvoiceForBidder(
     if (event.syncId) {
       await enqueueInvoicePut(db, event.syncId, id);
     }
-    return { kind: "created", invoiceId: id };
+    const supplementalAfterPaid = invs.some((i) => i.status === "paid");
+    return { kind: "created", invoiceId: id, supplementalAfterPaid };
   }
 
   return { kind: "skipped_paid" };
