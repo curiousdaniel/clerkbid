@@ -37,6 +37,18 @@ function formatMoney(raw: string): string {
   });
 }
 
+/** Width of the pinned Actions column; Last sync sticks immediately to its left. */
+const STICKY_ACTIONS_RIGHT = "8.5rem";
+
+const stickyPinEdge =
+  "border-l border-navy/10 shadow-[-4px_0_8px_-2px_rgba(0,0,0,0.08)] dark:border-slate-700";
+
+const stickyLastSyncTh = `sticky z-10 min-w-[7rem] bg-surface-muted/50 px-4 py-3 dark:bg-slate-800/80 ${stickyPinEdge}`;
+const stickyLastSyncTd = `sticky z-10 min-w-[7rem] bg-white px-4 py-3 dark:bg-slate-900 ${stickyPinEdge}`;
+
+const stickyActionsTh = `sticky right-0 z-10 min-w-[8.5rem] bg-surface-muted/50 px-4 py-3 dark:bg-slate-800/80 ${stickyPinEdge}`;
+const stickyActionsTd = `sticky right-0 z-10 min-w-[8.5rem] bg-white px-4 py-3 dark:bg-slate-900 ${stickyPinEdge}`;
+
 export function AdminDashboard({
   initialUsers,
   loadError,
@@ -355,7 +367,17 @@ export function AdminDashboard({
 
       <ActivitySummary users={initialUsers} />
 
-      <Card className="mt-6 overflow-x-auto p-0">
+      <p className="mt-6 text-xs text-muted">
+        Scroll horizontally for cloud-sync metrics. Last sync and actions stay
+        pinned on the right.
+      </p>
+
+      <div
+        className="mt-2"
+        role="region"
+        aria-label="User accounts and actions"
+      >
+        <Card className="overflow-x-auto p-0">
         <table className="w-full min-w-[1180px] text-left text-sm">
           <thead className="border-b border-navy/10 bg-surface-muted/50 text-xs font-semibold uppercase tracking-wide text-muted dark:border-slate-700 dark:bg-slate-800/40">
             <tr>
@@ -369,8 +391,13 @@ export function AdminDashboard({
               <th className="px-4 py-3 text-right">Sales</th>
               <th className="px-4 py-3 text-right">Invoices</th>
               <th className="px-4 py-3 text-right">Invoice total</th>
-              <th className="px-4 py-3">Last sync</th>
-              <th className="px-4 py-3">Actions</th>
+              <th
+                className={stickyLastSyncTh}
+                style={{ right: STICKY_ACTIONS_RIGHT }}
+              >
+                Last sync
+              </th>
+              <th className={stickyActionsTh}>Actions</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-navy/10 dark:divide-slate-700">
@@ -434,12 +461,15 @@ export function AdminDashboard({
                   <td className="px-4 py-3 text-right tabular-nums">
                     {formatMoney(u.invoice_total_sum)}
                   </td>
-                  <td className="px-4 py-3 align-top text-xs text-muted">
+                  <td
+                    className={`${stickyLastSyncTd} align-top text-xs text-muted`}
+                    style={{ right: STICKY_ACTIONS_RIGHT }}
+                  >
                     {u.last_cloud_sync
                       ? formatDateTime(u.last_cloud_sync)
                       : "—"}
                   </td>
-                  <td className="px-4 py-3 align-top">
+                  <td className={`${stickyActionsTd} align-top`}>
                     {isSelf ? (
                       <span className="text-xs text-muted">You</span>
                     ) : (
@@ -481,7 +511,8 @@ export function AdminDashboard({
         {initialUsers.length === 0 && !loadError ? (
           <p className="p-6 text-sm text-muted">No users yet.</p>
         ) : null}
-      </Card>
+        </Card>
+      </div>
 
       <p className="mt-6 text-xs text-muted">
         Impersonation and user deletion are audited in your server logs. Use
