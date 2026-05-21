@@ -30,13 +30,16 @@ import { PassOutCheckbox } from "./PassOutCheckbox";
 import { useToast } from "@/components/providers/ToastProvider";
 import { useCloudSync } from "@/components/providers/CloudSyncProvider";
 import { formatCurrency } from "@/lib/utils/formatCurrency";
-import { roundMoney } from "@/lib/services/invoiceLogic";
+import { roundMoney, upsertInvoiceForBidder } from "@/lib/services/invoiceLogic";
 import { mutateWithEventTables } from "@/lib/db/mutateWithParentEventTouch";
 import { newEntitySyncKey } from "@/lib/utils/clientSyncKey";
 import { enqueueSalePut } from "@/lib/sync/ops/enqueueOps";
 import {
+  readStickyConsignor,
   readSuggestNextLot,
+  subscribeStickyConsignor,
   subscribeSuggestNextLot,
+  writeStickyConsignor,
   writeSuggestNextLot,
 } from "@/lib/clerkFormPrefs";
 import {
@@ -105,6 +108,9 @@ export function SaleForm({
   const [clerkInitials, setClerkInitials] = useState("");
   const [passOutEnabled, setPassOutEnabled] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const submittingRef = useRef(false);
+  const lastSaleSignatureRef = useRef<{ key: string; at: number } | null>(null);
 
   const fieldRefs = useRef<Partial<Record<SaleFieldId, HTMLElement | null>>>(
     {}
@@ -124,6 +130,12 @@ export function SaleForm({
   const suggestNextLotEnabled = useSyncExternalStore(
     subscribeSuggestNextLot,
     readSuggestNextLot,
+    () => true
+  );
+
+  const stickyConsignorEnabled = useSyncExternalStore(
+    subscribeStickyConsignor,
+    readStickyConsignor,
     () => true
   );
 
@@ -342,8 +354,10 @@ export function SaleForm({
 
     setPassOutEnabled(false);
     setTitle("");
-    setConsignor("");
-    setLinkedConsignorId(null);
+    if (!readStickyConsignor()) {
+      setConsignor("");
+      setLinkedConsignorId(null);
+    }
     setLotNotes("");
     setQuantity("1");
     setSellPrice("");
@@ -354,6 +368,19 @@ export function SaleForm({
   }
 
   async function submitSale(shiftEnter: boolean) {
+    if (submittingRef.current) return;
+    if (!db) return;
+    submittingRef.current = true;
+    setSubmitting(true);
+    try {
+      await submitSaleInner(shiftEnter);
+    } finally {
+      submittingRef.current = false;
+      setSubmitting(false);
+    }
+  }
+
+  async function submitSaleInner(shiftEnter: boolean) {
     if (!db) return;
     setFormError(null);
     const passOutActive = passOutEnabled || shiftEnter;
@@ -510,6 +537,22 @@ export function SaleForm({
 
     const lineHammer = roundMoney(unitHammer * qty);
 
+    // Defensive guard against accidental re-submits (e.g. double-press, key
+    // repeat, sticky Enter): if the same (lot/paddle/amount) was just
+    // recorded for this event in the last 1.5s, refuse to write a duplicate.
+    const dupSignature = `${eventId}|${displayStr}|${baseNum}|${newSuffix}|${paddle}|${lineHammer}`;
+    const dupNow = Date.now();
+    if (
+      lastSaleSignatureRef.current != null &&
+      lastSaleSignatureRef.current.key === dupSignature &&
+      dupNow - lastSaleSignatureRef.current.at < 1500
+    ) {
+      setFormError(
+        "Same sale just recorded — clear the form or change a value to record again."
+      );
+      return;
+    }
+
     function buildSaleRow(lotId: number, saleSyncKey: string): Omit<Sale, "id"> {
       const row: Omit<Sale, "id"> = {
         eventId,
@@ -536,6 +579,25 @@ export function SaleForm({
         let newLotId = 0;
         let newSaleId = 0;
         await mutateWithEventTables(db, eventId, [db.lots, db.sales], async () => {
+          // Re-check inside the transaction: another tab/device may have
+          // created this lot or recorded a sale for it after our outer read.
+          const racedLot = await findLotByEventBaseAndSuffix(
+            db,
+            eventId,
+            baseNum,
+            newSuffix
+          );
+          if (racedLot?.id != null) {
+            const racedSales = await db.sales
+              .where("lotId")
+              .equals(racedLot.id)
+              .count();
+            if (racedSales > 0) {
+              throw new Error(
+                "Lot was just sold by another device — refresh and try again."
+              );
+            }
+          }
           const newLotRow: Omit<Lot, "id"> = {
             eventId,
             baseLotNumber: baseNum,
@@ -581,6 +643,17 @@ export function SaleForm({
         if (openCatalog) {
           let newSaleId = 0;
           await mutateWithEventTables(db, eventId, [db.lots, db.sales], async () => {
+            // Re-check inside the transaction in case another tab/device
+            // recorded a sale on this lot between our outer read and now.
+            const existingCount = await db.sales
+              .where("lotId")
+              .equals(lotId)
+              .count();
+            if (existingCount > 0) {
+              throw new Error(
+                "Lot was just sold by another device — refresh and try again."
+              );
+            }
             await patchLotWithConsignor(
               db,
               lotId,
@@ -616,6 +689,15 @@ export function SaleForm({
         } else {
           let newSaleId = 0;
           await mutateWithEventTables(db, eventId, [db.lots, db.sales], async () => {
+            const existingCount = await db.sales
+              .where("lotId")
+              .equals(lotId)
+              .count();
+            if (existingCount > 0) {
+              throw new Error(
+                "Lot was just sold by another device — refresh and try again."
+              );
+            }
             await patchLotWithConsignor(
               db,
               lotId,
@@ -636,6 +718,8 @@ export function SaleForm({
       return;
     }
 
+    lastSaleSignatureRef.current = { key: dupSignature, at: Date.now() };
+
     try {
       sessionStorage.setItem(CLERK_KEY, initials);
     } catch {
@@ -646,6 +730,19 @@ export function SaleForm({
     if (evCloud?.syncId) {
       const s = await db.sales.get(recordedSaleId);
       if (s) await enqueueSalePut(db, evCloud.syncId, s);
+    }
+
+    // Auto-allocate this sale onto the bidder's open invoice (or create
+    // a new supplemental invoice if all prior invoices are paid). This
+    // eliminates the "items not on the invoice" gap where sales stayed
+    // unallocated until someone manually clicked "Generate".
+    try {
+      const evForInvoice = await db.events.get(eventId);
+      if (evForInvoice) {
+        await upsertInvoiceForBidder(db, evForInvoice, bidderId);
+      }
+    } catch {
+      // Sale write succeeded; allocation can be retried via Generate.
     }
 
     showToast({ kind: "success", message: `Sale recorded — ${displayStr}` });
@@ -660,8 +757,13 @@ export function SaleForm({
     } else {
       setPassOutEnabled(false);
       setTitle("");
-      setConsignor("");
-      setLinkedConsignorId(null);
+      // Sticky consignor: leave consignor + linkedConsignorId set so the
+      // clerk doesn't have to re-pick it for the next lot. Lot autofill
+      // still overwrites it when a looked-up lot has a different consignor.
+      if (!readStickyConsignor()) {
+        setConsignor("");
+        setLinkedConsignorId(null);
+      }
       setLotNotes("");
       setQuantity("1");
       setSellPrice("");
@@ -988,6 +1090,20 @@ export function SaleForm({
         </span>
       </label>
 
+      <label className="flex cursor-pointer flex-wrap items-center gap-2 text-sm font-medium text-ink">
+        <input
+          type="checkbox"
+          checked={stickyConsignorEnabled}
+          onChange={(e) => writeStickyConsignor(e.target.checked)}
+          className="h-4 w-4 rounded border-navy/30 text-navy focus:ring-navy"
+        />
+        <span>Keep consignor between lots</span>
+        <span className="text-xs font-normal text-muted">
+          When on, the consignor stays selected after each sale; lot autofill
+          still updates it for lots with a different consignor.
+        </span>
+      </label>
+
       <PassOutCheckbox
         checked={passOutEnabled}
         onChange={setPassOutEnabled}
@@ -998,8 +1114,9 @@ export function SaleForm({
           type="submit"
           variant="primary"
           className="w-full py-3 text-base font-semibold sm:py-2.5"
+          disabled={submitting}
         >
-          Record sale
+          {submitting ? "Recording…" : "Record sale"}
         </Button>
         <p className="text-center text-xs text-muted sm:text-left">
           Same as pressing Enter — fill fields marked required in{" "}
@@ -1011,7 +1128,12 @@ export function SaleForm({
       </div>
 
       <div className="flex flex-wrap items-end gap-3">
-        <Button type="button" variant="secondary" onClick={() => void passLotNoSale()}>
+        <Button
+          type="button"
+          variant="secondary"
+          onClick={() => void passLotNoSale()}
+          disabled={submitting}
+        >
           Pass lot (no sale)
         </Button>
         <p className="max-w-xl text-xs text-muted">

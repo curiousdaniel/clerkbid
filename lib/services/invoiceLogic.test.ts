@@ -8,8 +8,10 @@ import {
   effectiveInvoiceBuyersPremiumRate,
   effectiveInvoiceTaxRate,
   formatInvoiceNumber,
+  recalculateAndPersistInvoice,
   resolveInvoiceForOpenDetail,
   roundMoney,
+  upsertInvoiceForBidder,
 } from "./invoiceLogic";
 
 describe("roundMoney", () => {
@@ -192,5 +194,223 @@ describe("resolveInvoiceForOpenDetail", () => {
       bidderId,
     });
     expect(found?.id).toBe(newId);
+  });
+});
+
+describe("recalculateAndPersistInvoice no-op skip", () => {
+  let db: AuctionDB;
+  let eventId: number;
+  let bidderId: number;
+  let event: AuctionEvent;
+
+  beforeEach(async () => {
+    const uid = `recalc_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    db = new AuctionDB(uid);
+    eventId = (await db.events.add({
+      name: "E",
+      organizationName: "O",
+      taxRate: 0,
+      buyersPremiumRate: 0,
+      defaultConsignorCommissionRate: 0,
+      currencySymbol: "$",
+      syncId: "evt-recalc-1",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    })) as number;
+    event = (await db.events.get(eventId)) as AuctionEvent;
+    bidderId = (await db.bidders.add({
+      eventId,
+      paddleNumber: 7,
+      firstName: "R",
+      lastName: "S",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    })) as number;
+  });
+
+  afterEach(async () => {
+    db.close();
+    await Dexie.delete(db.name);
+  });
+
+  it("does not update invoice row when totals are unchanged and touchGeneratedAt is false", async () => {
+    const generatedAt = new Date("2026-01-01T00:00:00.000Z");
+    const invId = (await db.invoices.add({
+      eventId,
+      bidderId,
+      invoiceNumber: "1-001",
+      subtotal: 0,
+      buyersPremiumAmount: 0,
+      taxAmount: 0,
+      total: 0,
+      status: "unpaid",
+      generatedAt,
+    })) as number;
+    const eventBefore = await db.events.get(eventId);
+
+    await recalculateAndPersistInvoice(db, invId, event);
+
+    const inv = await db.invoices.get(invId);
+    expect(inv?.generatedAt).toEqual(generatedAt);
+    // events.updatedAt should not have been bumped, since the row was not
+    // touched at all (live queries should not have refired).
+    const eventAfter = await db.events.get(eventId);
+    expect(eventAfter?.updatedAt?.getTime()).toBe(
+      eventBefore?.updatedAt?.getTime()
+    );
+  });
+
+  it("bumps generatedAt when touchGeneratedAt=true even with unchanged totals", async () => {
+    const generatedAt = new Date("2026-01-01T00:00:00.000Z");
+    const invId = (await db.invoices.add({
+      eventId,
+      bidderId,
+      invoiceNumber: "1-001",
+      subtotal: 0,
+      buyersPremiumAmount: 0,
+      taxAmount: 0,
+      total: 0,
+      status: "unpaid",
+      generatedAt,
+    })) as number;
+
+    await recalculateAndPersistInvoice(db, invId, event, {
+      touchGeneratedAt: true,
+    });
+
+    const inv = await db.invoices.get(invId);
+    expect(inv?.generatedAt?.getTime()).toBeGreaterThan(
+      generatedAt.getTime()
+    );
+  });
+});
+
+describe("upsertInvoiceForBidder no-op recalc", () => {
+  let db: AuctionDB;
+  let eventId: number;
+  let bidderId: number;
+  let event: AuctionEvent;
+
+  beforeEach(async () => {
+    const uid = `upsert_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    db = new AuctionDB(uid);
+    eventId = (await db.events.add({
+      name: "E",
+      organizationName: "O",
+      taxRate: 0,
+      buyersPremiumRate: 0,
+      defaultConsignorCommissionRate: 0,
+      currencySymbol: "$",
+      syncId: "evt-upsert-1",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    })) as number;
+    event = (await db.events.get(eventId)) as AuctionEvent;
+    bidderId = (await db.bidders.add({
+      eventId,
+      paddleNumber: 9,
+      firstName: "U",
+      lastName: "P",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    })) as number;
+  });
+
+  afterEach(async () => {
+    db.close();
+    await Dexie.delete(db.name);
+  });
+
+  it("does not bump generatedAt when no sales are unallocated and totals match", async () => {
+    const lotId = (await db.lots.add({
+      eventId,
+      baseLotNumber: 1,
+      lotSuffix: "",
+      displayLotNumber: "1",
+      description: "Lot 1",
+      quantity: 1,
+      status: "sold",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    })) as number;
+    const generatedAt = new Date("2026-01-01T00:00:00.000Z");
+    const invId = (await db.invoices.add({
+      eventId,
+      bidderId,
+      invoiceNumber: "1-001",
+      subtotal: 100,
+      buyersPremiumAmount: 0,
+      taxAmount: 0,
+      total: 100,
+      status: "unpaid",
+      generatedAt,
+    })) as number;
+    await db.sales.add({
+      eventId,
+      lotId,
+      bidderId,
+      displayLotNumber: "1",
+      paddleNumber: 9,
+      description: "Lot 1",
+      quantity: 1,
+      amount: 100,
+      clerkInitials: "AB",
+      createdAt: new Date(),
+      invoiceId: invId,
+    });
+
+    await upsertInvoiceForBidder(db, event, bidderId);
+
+    const inv = await db.invoices.get(invId);
+    // generatedAt should be untouched: nothing was allocated and totals match.
+    expect(inv?.generatedAt).toEqual(generatedAt);
+  });
+
+  it("bumps generatedAt when an unallocated sale is attached", async () => {
+    const lotId = (await db.lots.add({
+      eventId,
+      baseLotNumber: 2,
+      lotSuffix: "",
+      displayLotNumber: "2",
+      description: "Lot 2",
+      quantity: 1,
+      status: "sold",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    })) as number;
+    const generatedAt = new Date("2026-01-01T00:00:00.000Z");
+    const invId = (await db.invoices.add({
+      eventId,
+      bidderId,
+      invoiceNumber: "1-001",
+      subtotal: 0,
+      buyersPremiumAmount: 0,
+      taxAmount: 0,
+      total: 0,
+      status: "unpaid",
+      generatedAt,
+    })) as number;
+    await db.sales.add({
+      eventId,
+      lotId,
+      bidderId,
+      displayLotNumber: "2",
+      paddleNumber: 9,
+      description: "Lot 2",
+      quantity: 1,
+      amount: 50,
+      clerkInitials: "AB",
+      createdAt: new Date(),
+      // invoiceId omitted — unallocated
+    });
+
+    await upsertInvoiceForBidder(db, event, bidderId);
+
+    const inv = await db.invoices.get(invId);
+    expect(inv?.generatedAt?.getTime()).toBeGreaterThan(
+      generatedAt.getTime()
+    );
+    expect(inv?.subtotal).toBe(50);
+    expect(inv?.total).toBe(50);
   });
 });
