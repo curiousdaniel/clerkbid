@@ -5,9 +5,17 @@ import Link from "next/link";
 import { useLiveQuery } from "dexie-react-hooks";
 import { Header } from "@/components/layout/Header";
 import { Button } from "@/components/ui/Button";
-import { InvoiceTable, type InvoiceWithBidder } from "@/components/invoices/InvoiceTable";
+import {
+  InvoiceTable,
+  compareInvoiceRows,
+  type InvoiceWithBidder,
+  type InvoiceSortKey,
+  type SortDir,
+} from "@/components/invoices/InvoiceTable";
+import { Input } from "@/components/ui/Input";
 import { InvoiceDetailModal } from "@/components/invoices/InvoiceDetail";
 import { PaymentModal } from "@/components/invoices/PaymentModal";
+import { PaddleTally } from "@/components/clerking/PaddleTally";
 import { useCurrentEvent } from "@/lib/hooks/useCurrentEvent";
 import { useToast } from "@/components/providers/ToastProvider";
 import { useUserDb } from "@/components/providers/UserDbProvider";
@@ -38,6 +46,9 @@ export default function InvoicesPage() {
   const { showToast } = useToast();
   const { scheduleCloudPush } = useCloudSync();
   const [filter, setFilter] = useState<Filter>("all");
+  const [search, setSearch] = useState("");
+  const [sortKey, setSortKey] = useState<InvoiceSortKey>("invoiceNumber");
+  const [sortDir, setSortDir] = useState<SortDir>("asc");
   const [detailInv, setDetailInv] = useState<InvoiceWithBidder | null>(null);
   const [payInv, setPayInv] = useState<InvoiceWithBidder | null>(null);
 
@@ -58,20 +69,61 @@ export default function InvoicesPage() {
         const bMap = new Map(bidders.map((b) => [b.id!, b]));
         return invs
           .map((inv) => ({ ...inv, bidder: bMap.get(inv.bidderId) }))
-          .sort(
-            (a, b) =>
-              new Date(b.generatedAt).getTime() -
-              new Date(a.generatedAt).getTime()
-          );
+          .sort((a, b) => {
+            // Sort by invoice number (ascending) for a stable order that
+            // doesn't reshuffle on every recalc/sync. Falls back to id.
+            const an = a.invoiceNumber ?? "";
+            const bn = b.invoiceNumber ?? "";
+            const cmp = an.localeCompare(bn, undefined, { numeric: true });
+            if (cmp !== 0) return cmp;
+            return (a.id ?? 0) - (b.id ?? 0);
+          });
       }, []),
     [currentEventId, dbReady, db]
   );
 
   const filteredRows = useMemo(() => {
     if (!invoiceRows) return [];
-    if (filter === "all") return invoiceRows;
-    return invoiceRows.filter((i) => i.status === filter);
-  }, [invoiceRows, filter]);
+    const q = search.trim().toLowerCase();
+    let out =
+      filter === "all"
+        ? invoiceRows
+        : invoiceRows.filter((i) => i.status === filter);
+    if (q) {
+      out = out.filter((i) => {
+        const buyer = i.bidder
+          ? `${i.bidder.firstName} ${i.bidder.lastName}`
+          : "";
+        const paddle = i.bidder?.paddleNumber != null
+          ? String(i.bidder.paddleNumber)
+          : "";
+        const total = i.total != null ? i.total.toFixed(2) : "";
+        const blob = `${i.invoiceNumber ?? ""} ${buyer} ${paddle} ${total}`.toLowerCase();
+        return blob.includes(q);
+      });
+    }
+    return [...out].sort((a, b) => {
+      const cmp = compareInvoiceRows(a, b, sortKey);
+      if (cmp !== 0) return sortDir === "asc" ? cmp : -cmp;
+      // Stable secondary sort by invoice number then id.
+      const an = a.invoiceNumber ?? "";
+      const bn = b.invoiceNumber ?? "";
+      const cmp2 = an.localeCompare(bn, undefined, { numeric: true });
+      if (cmp2 !== 0) return cmp2;
+      return (a.id ?? 0) - (b.id ?? 0);
+    });
+  }, [invoiceRows, filter, search, sortKey, sortDir]);
+
+  function handleSortChange(next: InvoiceSortKey) {
+    setSortKey((prevKey) => {
+      if (prevKey === next) {
+        setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+        return next;
+      }
+      setSortDir("asc");
+      return next;
+    });
+  }
 
   const pendingBidders = useLiveQuery(
     async () =>
@@ -245,24 +297,48 @@ export default function InvoicesPage() {
         }
       />
 
-      <div className="mb-4 flex flex-wrap items-center gap-3">
-        <label
-          htmlFor="inv-filter"
-          className="text-sm font-medium text-ink dark:text-slate-200"
-        >
-          Show
-        </label>
-        <select
-          id="inv-filter"
-          className="rounded-lg border border-navy/20 bg-white px-3 py-2 text-sm focus:border-navy focus:outline-none focus:ring-1 focus:ring-navy dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100"
-          value={filter}
-          onChange={(e) => setFilter(e.target.value as Filter)}
-        >
-          <option value="all">All</option>
-          <option value="unpaid">Unpaid</option>
-          <option value="paid">Paid</option>
-        </select>
+      <div className="mb-4 flex flex-wrap items-end gap-3">
+        <div className="min-w-[260px] flex-1 max-w-md">
+          <Input
+            id="inv-search"
+            label="Search invoices"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Invoice #, buyer name, paddle, total…"
+          />
+        </div>
+        <div>
+          <label
+            htmlFor="inv-filter"
+            className="mb-1 block text-sm font-medium text-ink dark:text-slate-200"
+          >
+            Status
+          </label>
+          <select
+            id="inv-filter"
+            className="rounded-lg border border-navy/20 bg-white px-3 py-2 text-sm focus:border-navy focus:outline-none focus:ring-1 focus:ring-navy dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100"
+            value={filter}
+            onChange={(e) => setFilter(e.target.value as Filter)}
+          >
+            <option value="all">All</option>
+            <option value="unpaid">Unpaid</option>
+            <option value="paid">Paid</option>
+          </select>
+        </div>
+        <p className="ml-auto self-center text-xs text-muted">
+          Showing {filteredRows.length}
+          {invoiceRows ? ` of ${invoiceRows.length}` : ""}
+        </p>
       </div>
+
+      <details className="mb-6 rounded-xl border border-navy/10 bg-white open:shadow-sm dark:border-slate-700 dark:bg-slate-900">
+        <summary className="cursor-pointer list-none px-4 py-3 text-sm font-semibold text-navy dark:text-slate-100">
+          Look up a paddle&apos;s tally before invoicing
+        </summary>
+        <div className="border-t border-navy/10 p-4 dark:border-slate-700">
+          <PaddleTally event={currentEvent} />
+        </div>
+      </details>
 
       {pendingBidders && pendingBidders.length > 0 ? (
         <div className="mb-8 rounded-xl border border-gold/30 bg-amber-50/40 p-4 dark:border-amber-900/50 dark:bg-amber-950/30">
@@ -303,6 +379,9 @@ export default function InvoicesPage() {
         <InvoiceTable
           rows={filteredRows}
           currencySymbol={sym}
+          sortKey={sortKey}
+          sortDir={sortDir}
+          onSortChange={handleSortChange}
           onRowClick={(inv) => setDetailInv(inv)}
           onPrint={(inv) => void handlePrint(inv)}
           onMarkPaid={(inv) => setPayInv(inv)}

@@ -6,6 +6,7 @@ import { EventProvider } from "@/components/providers/EventProvider";
 import { ToastProvider } from "@/components/providers/ToastProvider";
 import { LoginAnnouncementProvider } from "@/components/providers/LoginAnnouncementProvider";
 import { CloudSyncProvider } from "@/components/providers/CloudSyncProvider";
+import { HeartbeatProvider } from "@/components/providers/HeartbeatProvider";
 
 export function ProtectedShell({ children }: { children: React.ReactNode }) {
   return (
@@ -14,7 +15,9 @@ export function ProtectedShell({ children }: { children: React.ReactNode }) {
         <EventProvider>
           <ToastProvider>
             <LoginAnnouncementProvider>
-              <CloudSyncProvider>{children}</CloudSyncProvider>
+              <CloudSyncProvider>
+                <HeartbeatProvider>{children}</HeartbeatProvider>
+              </CloudSyncProvider>
             </LoginAnnouncementProvider>
           </ToastProvider>
         </EventProvider>

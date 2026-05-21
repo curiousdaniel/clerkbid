@@ -1,6 +1,6 @@
 "use client";
 
-import { FileText, CreditCard } from "lucide-react";
+import { ArrowDown, ArrowUp, ArrowUpDown, FileText, CreditCard } from "lucide-react";
 import type { Bidder, Invoice } from "@/lib/db";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
@@ -10,20 +10,76 @@ import { PAYMENT_METHODS } from "@/lib/utils/constants";
 
 export type InvoiceWithBidder = Invoice & { bidder?: Bidder };
 
+export type InvoiceSortKey =
+  | "invoiceNumber"
+  | "bidderName"
+  | "paddle"
+  | "subtotal"
+  | "buyersPremium"
+  | "tax"
+  | "total"
+  | "status";
+
+export type SortDir = "asc" | "desc";
+
 function paymentLabel(value: string | undefined): string {
   if (!value) return "—";
   return PAYMENT_METHODS.find((p) => p.value === value)?.label ?? value;
 }
 
+function SortableTh({
+  sortKey,
+  activeKey,
+  dir,
+  onSortChange,
+  children,
+  align = "left",
+}: {
+  sortKey: InvoiceSortKey;
+  activeKey: InvoiceSortKey;
+  dir: SortDir;
+  onSortChange: (key: InvoiceSortKey) => void;
+  children: React.ReactNode;
+  align?: "left" | "right";
+}) {
+  const active = sortKey === activeKey;
+  const Icon = !active ? ArrowUpDown : dir === "asc" ? ArrowUp : ArrowDown;
+  return (
+    <th
+      className={`px-3 py-2 font-semibold text-navy dark:text-slate-200 ${align === "right" ? "text-right" : "text-left"}`}
+      aria-sort={
+        !active ? "none" : dir === "asc" ? "ascending" : "descending"
+      }
+    >
+      <button
+        type="button"
+        className={`inline-flex items-center gap-1 hover:text-ink dark:hover:text-white ${
+          align === "right" ? "flex-row-reverse" : ""
+        }`}
+        onClick={() => onSortChange(sortKey)}
+      >
+        <Icon className="h-3.5 w-3.5 text-muted" aria-hidden />
+        <span>{children}</span>
+      </button>
+    </th>
+  );
+}
+
 export function InvoiceTable({
   rows,
   currencySymbol,
+  sortKey,
+  sortDir,
+  onSortChange,
   onRowClick,
   onPrint,
   onMarkPaid,
 }: {
   rows: InvoiceWithBidder[];
   currencySymbol: string;
+  sortKey: InvoiceSortKey;
+  sortDir: SortDir;
+  onSortChange: (key: InvoiceSortKey) => void;
   onRowClick: (inv: InvoiceWithBidder) => void;
   onPrint: (inv: InvoiceWithBidder) => void;
   onMarkPaid: (inv: InvoiceWithBidder) => void;
@@ -39,27 +95,75 @@ export function InvoiceTable({
       <table className="w-full min-w-[720px] text-sm sm:min-w-[880px] md:min-w-[980px]">
         <thead className="border-b border-navy/10 bg-surface dark:border-slate-700 dark:bg-slate-800/80">
           <tr>
-            <th className="px-3 py-2 text-left font-semibold text-navy dark:text-slate-200">
+            <SortableTh
+              sortKey="invoiceNumber"
+              activeKey={sortKey}
+              dir={sortDir}
+              onSortChange={onSortChange}
+            >
               Invoice #
-            </th>
-            <th className="px-3 py-2 text-left font-semibold text-navy dark:text-slate-200">
+            </SortableTh>
+            <SortableTh
+              sortKey="bidderName"
+              activeKey={sortKey}
+              dir={sortDir}
+              onSortChange={onSortChange}
+            >
               Bidder
-            </th>
-            <th className="px-3 py-2 text-right font-semibold text-navy dark:text-slate-200">
+            </SortableTh>
+            <SortableTh
+              sortKey="paddle"
+              activeKey={sortKey}
+              dir={sortDir}
+              onSortChange={onSortChange}
+              align="right"
+            >
+              Paddle
+            </SortableTh>
+            <SortableTh
+              sortKey="subtotal"
+              activeKey={sortKey}
+              dir={sortDir}
+              onSortChange={onSortChange}
+              align="right"
+            >
               Hammer
-            </th>
-            <th className="px-3 py-2 text-right font-semibold text-navy dark:text-slate-200">
+            </SortableTh>
+            <SortableTh
+              sortKey="buyersPremium"
+              activeKey={sortKey}
+              dir={sortDir}
+              onSortChange={onSortChange}
+              align="right"
+            >
               Buyer prem.
-            </th>
-            <th className="px-3 py-2 text-right font-semibold text-navy dark:text-slate-200">
+            </SortableTh>
+            <SortableTh
+              sortKey="tax"
+              activeKey={sortKey}
+              dir={sortDir}
+              onSortChange={onSortChange}
+              align="right"
+            >
               Tax
-            </th>
-            <th className="px-3 py-2 text-right font-semibold text-navy dark:text-slate-200">
+            </SortableTh>
+            <SortableTh
+              sortKey="total"
+              activeKey={sortKey}
+              dir={sortDir}
+              onSortChange={onSortChange}
+              align="right"
+            >
               Total
-            </th>
-            <th className="px-3 py-2 text-left font-semibold text-navy dark:text-slate-200">
+            </SortableTh>
+            <SortableTh
+              sortKey="status"
+              activeKey={sortKey}
+              dir={sortDir}
+              onSortChange={onSortChange}
+            >
               Status
-            </th>
+            </SortableTh>
             <th className="px-3 py-2 text-left font-semibold text-navy dark:text-slate-200">
               Payment
             </th>
@@ -71,7 +175,7 @@ export function InvoiceTable({
         <tbody className="divide-y divide-navy/10 dark:divide-slate-700">
           {rows.length === 0 ? (
             <tr>
-              <td colSpan={9} className="px-3 py-8 text-center text-muted">
+              <td colSpan={10} className="px-3 py-8 text-center text-muted">
                 No invoices match this filter.
               </td>
             </tr>
@@ -87,17 +191,15 @@ export function InvoiceTable({
                 </td>
                 <td className="px-3 py-2">
                   {inv.bidder ? (
-                    <>
-                      <span className="text-ink dark:text-slate-100">
-                        {inv.bidder.firstName} {inv.bidder.lastName}
-                      </span>
-                      <span className="ml-2 font-mono text-xs text-muted">
-                        #{inv.bidder.paddleNumber}
-                      </span>
-                    </>
+                    <span className="text-ink dark:text-slate-100">
+                      {inv.bidder.firstName} {inv.bidder.lastName}
+                    </span>
                   ) : (
                     <span className="text-muted">—</span>
                   )}
+                </td>
+                <td className="px-3 py-2 text-right font-mono text-muted">
+                  {inv.bidder ? `#${inv.bidder.paddleNumber}` : "—"}
                 </td>
                 <td className="px-3 py-2 text-right font-mono">
                   {formatCurrency(inv.subtotal, sym)}
@@ -163,4 +265,46 @@ export function InvoiceTable({
       </table>
     </div>
   );
+}
+
+export function compareInvoiceRows(
+  a: InvoiceWithBidder,
+  b: InvoiceWithBidder,
+  key: InvoiceSortKey
+): number {
+  switch (key) {
+    case "invoiceNumber":
+      return (a.invoiceNumber ?? "").localeCompare(
+        b.invoiceNumber ?? "",
+        undefined,
+        { numeric: true }
+      );
+    case "bidderName": {
+      const an = a.bidder
+        ? `${a.bidder.lastName} ${a.bidder.firstName}`.trim()
+        : "";
+      const bn = b.bidder
+        ? `${b.bidder.lastName} ${b.bidder.firstName}`.trim()
+        : "";
+      return an.localeCompare(bn, undefined, { sensitivity: "base" });
+    }
+    case "paddle":
+      return (
+        (a.bidder?.paddleNumber ?? Number.POSITIVE_INFINITY) -
+        (b.bidder?.paddleNumber ?? Number.POSITIVE_INFINITY)
+      );
+    case "subtotal":
+      return a.subtotal - b.subtotal;
+    case "buyersPremium":
+      return a.buyersPremiumAmount - b.buyersPremiumAmount;
+    case "tax":
+      return a.taxAmount - b.taxAmount;
+    case "total":
+      return a.total - b.total;
+    case "status":
+      // unpaid before paid for asc (unpaid is the actionable state)
+      return a.status === b.status ? 0 : a.status === "unpaid" ? -1 : 1;
+    default:
+      return 0;
+  }
 }

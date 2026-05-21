@@ -114,3 +114,26 @@ CREATE TABLE IF NOT EXISTS user_announcement_toasts_shown (
 
 CREATE INDEX IF NOT EXISTS idx_user_announcement_toasts_user
   ON user_announcement_toasts_shown (user_id);
+
+CREATE TABLE IF NOT EXISTS user_activity_pings (
+  id BIGSERIAL PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+  last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_activity_pings_user_seen
+  ON user_activity_pings (user_id, last_seen_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_user_activity_pings_seen
+  ON user_activity_pings (last_seen_at DESC);
+
+CREATE TABLE IF NOT EXISTS user_activity_summary (
+  user_id INTEGER PRIMARY KEY REFERENCES users (id) ON DELETE CASCADE,
+  last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  pings_24h INTEGER NOT NULL DEFAULT 0,
+  pings_24h_window_started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_activity_summary_last_seen
+  ON user_activity_summary (last_seen_at DESC);

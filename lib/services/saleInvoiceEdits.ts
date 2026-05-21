@@ -7,8 +7,65 @@ import {
 } from "@/lib/services/invoiceLogic";
 import {
   enqueueInvoicePut,
+  enqueueSaleDelete,
   enqueueSalePut,
+  ensureSaleSyncKey,
 } from "@/lib/sync/ops/enqueueOps";
+
+/**
+ * Voids a sale: deletes the sale row, marks the lot unsold, recomputes
+ * any attached invoice (paid invoices are skipped — caller should mark
+ * unpaid first if needed), and enqueues the appropriate cloud sync ops.
+ *
+ * Throws when the sale belongs to a paid invoice — caller is expected to
+ * gate the UI by checking `sale.invoiceId`'s status before opening the
+ * void confirmation. If the underlying invoice has been marked paid in
+ * the meantime, this is a no-op that throws clearly.
+ */
+export async function voidSale(
+  db: AuctionDB,
+  event: AuctionEvent,
+  saleId: number
+): Promise<void> {
+  const sale = await db.sales.get(saleId);
+  if (sale?.id == null) {
+    throw new Error("Sale not found.");
+  }
+  if (sale.invoiceId != null) {
+    const inv = await db.invoices.get(sale.invoiceId);
+    if (inv?.status === "paid") {
+      throw new Error(
+        "Cannot void a sale on a paid invoice. Mark the invoice unpaid first."
+      );
+    }
+  }
+  const lotId = sale.lotId;
+  const invoiceId = sale.invoiceId;
+  const saleSyncKey = await ensureSaleSyncKey(db, saleId);
+  await mutateWithEventTables(
+    db,
+    event.id!,
+    [db.lots, db.sales],
+    async () => {
+      await db.sales.delete(saleId);
+      if (lotId != null) {
+        await db.lots.update(lotId, {
+          status: "unsold",
+          updatedAt: new Date(),
+        });
+      }
+    }
+  );
+  if (invoiceId != null) {
+    await recalculateAndPersistInvoice(db, invoiceId, event);
+    if (event.syncId) {
+      await enqueueInvoicePut(db, event.syncId, invoiceId);
+    }
+  }
+  if (event.syncId && saleSyncKey) {
+    await enqueueSaleDelete(db, event.syncId, saleSyncKey);
+  }
+}
 
 export async function removeSaleFromInvoice(
   db: AuctionDB,

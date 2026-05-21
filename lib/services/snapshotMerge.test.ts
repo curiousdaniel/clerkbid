@@ -372,6 +372,70 @@ describe("mergeServerSnapshotIntoLocal", () => {
   });
 
   describe("invoices", () => {
+    it("preserves local paid status when an older snapshot says unpaid", async () => {
+      const localBidderId = (await db.bidders.add({
+        eventId,
+        paddleNumber: 5,
+        firstName: "Bob",
+        lastName: "Jones",
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      })) as number;
+      // Local invoice was just paid (newer generatedAt).
+      const localInvId = (await db.invoices.add({
+        eventId,
+        bidderId: localBidderId,
+        invoiceNumber: "INV-001",
+        subtotal: 100,
+        buyersPremiumAmount: 0,
+        taxAmount: 0,
+        total: 100,
+        status: "paid",
+        paymentMethod: "cash",
+        paymentDate: new Date("2026-01-03T12:00:00.000Z"),
+        generatedAt: new Date("2026-01-03T12:00:00.000Z"),
+        syncKey: "inv-key-1",
+      })) as number;
+
+      // Server says unpaid with a strictly newer generatedAt (e.g. teammate
+      // re-recalculated after pay): without the paid-protection guard, the
+      // merge would overwrite local paid → unpaid.
+      const payload = makePayload({
+        bidders: [
+          {
+            legacyId: 50,
+            paddleNumber: 5,
+            firstName: "Bob",
+            lastName: "Jones",
+            createdAt: "2026-01-01T00:00:00.000Z",
+            updatedAt: "2026-01-01T00:00:00.000Z",
+          },
+        ],
+        invoices: [
+          {
+            invoiceNumber: "INV-001",
+            subtotal: 100,
+            buyersPremiumAmount: 0,
+            taxAmount: 0,
+            total: 100,
+            status: "unpaid" as const,
+            generatedAt: "2026-01-04T00:00:00.000Z",
+            syncKey: "inv-key-1",
+            legacyBidderId: 50,
+          },
+        ],
+      });
+
+      await mergeServerSnapshotIntoLocal(db, eventId, payload);
+
+      const local = await db.invoices.get(localInvId);
+      expect(local?.status).toBe("paid");
+      expect(local?.paymentMethod).toBe("cash");
+      expect(local?.paymentDate).toEqual(
+        new Date("2026-01-03T12:00:00.000Z")
+      );
+    });
+
     it("adds server-only invoices matched by syncKey", async () => {
       await db.bidders.add({
         eventId,

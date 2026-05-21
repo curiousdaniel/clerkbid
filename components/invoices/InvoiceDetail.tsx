@@ -230,6 +230,23 @@ export function InvoiceDetailModal({
     inv.buyersPremiumAmount !== 0 || bpEff > 0;
   const manualLines = inv.manualLines ?? [];
 
+  // Defensive de-duplication by lotId (legacy bug + multi-device race
+  // condition could leave two sale rows attached to the same lot on one
+  // invoice). Keep the most recent (highest id wins as a stable tiebreaker)
+  // so the user sees one line per lot. The underlying sales rows are not
+  // modified here; the Reports → repair pass cleans them up.
+  const dedupedSalesMap = new Map<number, Sale>();
+  for (const s of sales) {
+    const existing = dedupedSalesMap.get(s.lotId);
+    if (
+      !existing ||
+      (s.id != null && existing.id != null && s.id > existing.id)
+    ) {
+      dedupedSalesMap.set(s.lotId, s);
+    }
+  }
+  const displaySales: Sale[] = Array.from(dedupedSalesMap.values());
+
   async function setManualLines(next: InvoiceManualLine[]) {
     await persistAndRecalc({ manualLines: next });
   }
@@ -554,7 +571,7 @@ export function InvoiceDetailModal({
               </tr>
             </thead>
             <tbody className="divide-y divide-navy/10 dark:divide-slate-700">
-              {sales.length === 0 && manualLines.length === 0 ? (
+              {displaySales.length === 0 && manualLines.length === 0 ? (
                 <tr>
                   <td
                     colSpan={invoice.status === "unpaid" ? 6 : 5}
@@ -564,7 +581,7 @@ export function InvoiceDetailModal({
                   </td>
                 </tr>
               ) : null}
-              {sales.map((s) => (
+              {displaySales.map((s) => (
                 <tr key={s.id}>
                   <td className="px-3 py-2 font-mono">{s.displayLotNumber}</td>
                   <td className="px-3 py-2">{s.description}</td>
