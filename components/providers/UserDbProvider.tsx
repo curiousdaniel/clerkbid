@@ -16,6 +16,7 @@ import {
 } from "@/lib/db";
 import { ensureSettingsRow } from "@/lib/settings";
 import { readOfflineUserId } from "@/lib/auth/offlineSession";
+import { repairDuplicateInvoiceLines } from "@/lib/db/repairDuplicateInvoiceLines";
 
 export type UserDbContextValue = {
   db: AuctionDB | null;
@@ -69,6 +70,9 @@ export function UserDbProvider({ children }: { children: ReactNode }) {
       try {
         await migrateLegacyToUserDb(db);
         await ensureSettingsRow(db);
+        // One-shot defensive repair for legacy duplicate invoice lines.
+        // Gated by a localStorage flag so it runs at most once per profile.
+        await repairDuplicateInvoiceLines(db);
       } catch (e) {
         console.error(e);
       } finally {

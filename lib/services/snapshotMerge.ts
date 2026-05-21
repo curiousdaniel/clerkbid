@@ -295,6 +295,12 @@ async function mergeImpl(
       summary.invoicesAdded++;
     } else {
       if (safeMs(sinv.generatedAt) > safeMs(local.generatedAt)) {
+        // Paid-status protection: never let an older paid status be
+        // silently flipped back to unpaid by a teammate's later recalc
+        // that did not include the payment. Preserve local paid +
+        // payment fields when the incoming snapshot row is unpaid.
+        const preservePaid =
+          local.status === "paid" && sinv.status === "unpaid";
         await db.invoices.update(local.id!, {
           bidderId: resolvedBidderId,
           invoiceNumber: sinv.invoiceNumber,
@@ -302,10 +308,18 @@ async function mergeImpl(
           buyersPremiumAmount: roundMoney(sinv.buyersPremiumAmount),
           taxAmount: sinv.taxAmount,
           total: sinv.total,
-          status: sinv.status,
-          paymentMethod: sinv.paymentMethod,
-          paymentDate: sinv.paymentDate ? parseDate(sinv.paymentDate) : undefined,
-          generatedAt: parseDate(sinv.generatedAt),
+          status: preservePaid ? "paid" : sinv.status,
+          paymentMethod: preservePaid
+            ? local.paymentMethod
+            : sinv.paymentMethod,
+          paymentDate: preservePaid
+            ? local.paymentDate
+            : sinv.paymentDate
+              ? parseDate(sinv.paymentDate)
+              : undefined,
+          generatedAt: preservePaid
+            ? local.generatedAt
+            : parseDate(sinv.generatedAt),
           buyersPremiumRate: sinv.buyersPremiumRate,
           taxRate: sinv.taxRate,
           manualLines: sinv.manualLines,

@@ -153,7 +153,9 @@ export type UpsertResult =
 
 /**
  * Recompute persisted totals from sales + manual lines + effective rates.
- * No-op for paid invoices.
+ * No-op for paid invoices. If computed totals match the stored row and
+ * `touchGeneratedAt` is not requested, the row is left untouched to avoid
+ * spurious live-query refires that reshuffle/jitter the invoices list.
  */
 export async function recalculateAndPersistInvoice(
   db: AuctionDB,
@@ -174,6 +176,12 @@ export async function recalculateAndPersistInvoice(
     inv,
     event
   );
+  const totalsUnchanged =
+    parts.subtotal === inv.subtotal &&
+    parts.buyersPremiumAmount === inv.buyersPremiumAmount &&
+    parts.taxAmount === inv.taxAmount &&
+    parts.total === inv.total;
+  if (totalsUnchanged && !options?.touchGeneratedAt) return;
   await db.transaction("rw", [db.events, db.invoices], async () => {
     await db.events.update(inv.eventId, { updatedAt: new Date() });
     await db.invoices.update(invoiceId, {
@@ -220,19 +228,64 @@ export async function upsertInvoiceForBidder(
   const now = new Date();
 
   if (unpaid?.id != null) {
-    if (unallocated.length > 0) {
-      await db.transaction("rw", [db.events, db.sales], async () => {
+    // No-op skip: nothing to allocate AND totals already match — avoid
+    // touching the row so live queries don't refire and reorder the list.
+    if (unallocated.length === 0) {
+      const lineSales = await getSalesForInvoice(db, unpaid.id);
+      const hammerSubtotal = roundMoney(
+        lineSales.reduce((a, s) => a + s.amount, 0)
+      );
+      const parts = computeInvoiceTotalsFromParts(
+        hammerSubtotal,
+        unpaid.manualLines,
+        unpaid,
+        event
+      );
+      const totalsUnchanged =
+        parts.subtotal === unpaid.subtotal &&
+        parts.buyersPremiumAmount === unpaid.buyersPremiumAmount &&
+        parts.taxAmount === unpaid.taxAmount &&
+        parts.total === unpaid.total;
+      if (totalsUnchanged) {
+        return { kind: "updated", invoiceId: unpaid.id };
+      }
+    }
+    // Atomic allocate + recompute + persist so live queries fire once
+    // (no flicker between "partial total" and "full total").
+    await db.transaction(
+      "rw",
+      [db.events, db.invoices, db.sales],
+      async () => {
         await db.events.update(eventId, { updatedAt: new Date() });
         for (const s of unallocated) {
           if (s.id != null) {
             await db.sales.update(s.id, { invoiceId: unpaid.id });
           }
         }
-      });
-    }
-    await recalculateAndPersistInvoice(db, unpaid.id, event, {
-      touchGeneratedAt: true,
-    });
+        const lineSales = await db.sales
+          .where("invoiceId")
+          .equals(unpaid.id!)
+          .toArray();
+        const hammerSubtotal = roundMoney(
+          lineSales.reduce((a, s) => a + s.amount, 0)
+        );
+        const parts = computeInvoiceTotalsFromParts(
+          hammerSubtotal,
+          unpaid.manualLines,
+          unpaid,
+          event
+        );
+        await db.invoices.update(unpaid.id!, {
+          subtotal: parts.subtotal,
+          buyersPremiumAmount: parts.buyersPremiumAmount,
+          taxAmount: parts.taxAmount,
+          total: parts.total,
+          // Only bump generatedAt when sales were actually allocated so
+          // pure recalcs don't reshuffle the invoice list.
+          ...(unallocated.length > 0 ? { generatedAt: now } : {}),
+        });
+      }
+    );
     if (event.syncId) {
       await enqueueInvoicePut(db, event.syncId, unpaid.id);
     }
@@ -245,7 +298,7 @@ export async function upsertInvoiceForBidder(
     let id = 0;
     await db.transaction("rw", [db.events, db.invoices, db.sales], async () => {
       await db.events.update(eventId, { updatedAt: new Date() });
-      id = (await db.invoices.add({
+      const initialInv: Omit<Invoice, "id"> = {
         eventId,
         bidderId,
         invoiceNumber,
@@ -256,15 +309,32 @@ export async function upsertInvoiceForBidder(
         status: "unpaid",
         generatedAt: now,
         syncKey: newEntitySyncKey(),
-      })) as number;
+      };
+      id = (await db.invoices.add(initialInv)) as number;
       for (const s of unallocated) {
         if (s.id != null) {
           await db.sales.update(s.id, { invoiceId: id });
         }
       }
-    });
-    await recalculateAndPersistInvoice(db, id, event, {
-      touchGeneratedAt: true,
+      const lineSales = await db.sales
+        .where("invoiceId")
+        .equals(id)
+        .toArray();
+      const hammerSubtotal = roundMoney(
+        lineSales.reduce((a, s) => a + s.amount, 0)
+      );
+      const parts = computeInvoiceTotalsFromParts(
+        hammerSubtotal,
+        undefined,
+        { ...initialInv, id } as Invoice,
+        event
+      );
+      await db.invoices.update(id, {
+        subtotal: parts.subtotal,
+        buyersPremiumAmount: parts.buyersPremiumAmount,
+        taxAmount: parts.taxAmount,
+        total: parts.total,
+      });
     });
     if (event.syncId) {
       await enqueueInvoicePut(db, event.syncId, id);

@@ -263,7 +263,26 @@ async function applyRemoteOpImpl(
           message: "Invoice bidder conflict",
         };
       }
-      await db.invoices.update(existing.id, base);
+      // Paid-status protection: if a teammate's recalc/full-put would
+      // overwrite a locally-paid invoice with status=unpaid, preserve our
+      // paid status, paymentMethod and paymentDate. Also keep our
+      // generatedAt so this device wins LWW until a real "mark unpaid"
+      // arrives (which would carry status=unpaid AND no paymentDate).
+      let merged: Omit<Invoice, "id"> = base;
+      if (existing.status === "paid" && p.status === "unpaid") {
+        merged = {
+          ...base,
+          status: "paid",
+          generatedAt: existing.generatedAt,
+          ...(existing.paymentMethod != null
+            ? { paymentMethod: existing.paymentMethod }
+            : {}),
+          ...(existing.paymentDate != null
+            ? { paymentDate: existing.paymentDate }
+            : {}),
+        };
+      }
+      await db.invoices.update(existing.id, merged);
     } else {
       await db.invoices.add(base);
     }
@@ -302,6 +321,9 @@ async function applyRemoteOpImpl(
             const d = new Date(v);
             if (!Number.isNaN(d.getTime())) row.paymentDate = d;
           }
+        } else if (k === "generatedAt" && typeof v === "string") {
+          const d = new Date(v);
+          if (!Number.isNaN(d.getTime())) row.generatedAt = d;
         } else if (k === "manualLines" && Array.isArray(v)) {
           row.manualLines = v as Invoice["manualLines"];
         } else if (k === "status" && (v === "paid" || v === "unpaid")) {

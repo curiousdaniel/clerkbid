@@ -1,11 +1,11 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import type { Invoice } from "@/lib/db";
 import { mutateWithEventTables } from "@/lib/db/mutateWithParentEventTouch";
 import { useUserDb } from "@/components/providers/UserDbProvider";
 import { useCloudSync } from "@/components/providers/CloudSyncProvider";
-import { enqueueInvoicePut } from "@/lib/sync/ops/enqueueOps";
+import { enqueueInvoicePatch } from "@/lib/sync/ops/enqueueOps";
 import { Modal } from "@/components/ui/Modal";
 import { Button } from "@/components/ui/Button";
 import { PAYMENT_METHODS } from "@/lib/utils/constants";
@@ -24,28 +24,57 @@ export function PaymentModal({
   const { db } = useUserDb();
   const { scheduleCloudPush } = useCloudSync();
   const [method, setMethod] = useState<string>("cash");
+  const [confirming, setConfirming] = useState(false);
+  const confirmingRef = useRef(false);
 
   useEffect(() => {
-    if (open) setMethod("cash");
+    if (open) {
+      setMethod("cash");
+      setConfirming(false);
+      confirmingRef.current = false;
+    }
   }, [open, invoice?.id]);
 
   async function confirm() {
+    if (confirmingRef.current) return;
     if (invoice?.id == null || !db) return;
-    await mutateWithEventTables(db, invoice.eventId, [db.invoices], async () => {
-      await db.invoices.update(invoice.id, {
-        status: "paid",
-        paymentMethod: method as "cash" | "check" | "credit_card" | "other",
-        paymentDate: new Date(),
-      });
-    });
-    const inv = await db.invoices.get(invoice.id);
-    const ev = inv ? await db.events.get(inv.eventId) : null;
-    if (inv?.id != null && ev?.syncId) {
-      await enqueueInvoicePut(db, ev.syncId, inv.id);
+    confirmingRef.current = true;
+    setConfirming(true);
+    try {
+      const now = new Date();
+      const pm = method as "cash" | "check" | "credit_card" | "other";
+      await mutateWithEventTables(
+        db,
+        invoice.eventId,
+        [db.invoices],
+        async () => {
+          await db.invoices.update(invoice.id, {
+            status: "paid",
+            paymentMethod: pm,
+            paymentDate: now,
+            // Bump generatedAt so this paid edit wins last-write-wins
+            // against a teammate's later recalc that left it unpaid.
+            generatedAt: now,
+          });
+        }
+      );
+      const inv = await db.invoices.get(invoice.id);
+      const ev = inv ? await db.events.get(inv.eventId) : null;
+      if (inv?.id != null && ev?.syncId) {
+        await enqueueInvoicePatch(db, ev.syncId, inv.id, {
+          status: "paid",
+          paymentMethod: pm,
+          paymentDate: now,
+          generatedAt: now,
+        });
+      }
+      scheduleCloudPush();
+      onPaid(invoice);
+      onClose();
+    } finally {
+      confirmingRef.current = false;
+      setConfirming(false);
     }
-    scheduleCloudPush();
-    onPaid(invoice);
-    onClose();
   }
 
   return (
@@ -55,11 +84,20 @@ export function PaymentModal({
       onClose={onClose}
       footer={
         <>
-          <Button variant="secondary" type="button" onClick={onClose}>
+          <Button
+            variant="secondary"
+            type="button"
+            onClick={onClose}
+            disabled={confirming}
+          >
             Cancel
           </Button>
-          <Button type="button" onClick={() => void confirm()}>
-            Confirm payment
+          <Button
+            type="button"
+            onClick={() => void confirm()}
+            disabled={confirming}
+          >
+            {confirming ? "Saving…" : "Confirm payment"}
           </Button>
         </>
       }

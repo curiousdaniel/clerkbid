@@ -58,11 +58,15 @@ export default function InvoicesPage() {
         const bMap = new Map(bidders.map((b) => [b.id!, b]));
         return invs
           .map((inv) => ({ ...inv, bidder: bMap.get(inv.bidderId) }))
-          .sort(
-            (a, b) =>
-              new Date(b.generatedAt).getTime() -
-              new Date(a.generatedAt).getTime()
-          );
+          .sort((a, b) => {
+            // Sort by invoice number (ascending) for a stable order that
+            // doesn't reshuffle on every recalc/sync. Falls back to id.
+            const an = a.invoiceNumber ?? "";
+            const bn = b.invoiceNumber ?? "";
+            const cmp = an.localeCompare(bn, undefined, { numeric: true });
+            if (cmp !== 0) return cmp;
+            return (a.id ?? 0) - (b.id ?? 0);
+          });
       }, []),
     [currentEventId, dbReady, db]
   );
